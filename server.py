@@ -240,7 +240,15 @@ async def get_merchant():
             "configured": False
         }
 
-    return MERCHANT
+    merchant = MERCHANT.copy()
+
+    if "_id" in merchant:
+
+        merchant["_id"] = str(
+            merchant["_id"]
+        )
+
+    return merchant
 # ==============================
 # PYDANTIC MODELS
 # ==============================
