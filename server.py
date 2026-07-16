@@ -1,29 +1,51 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from contextlib import asynccontextmanager
 from dotenv import load_dotenv
+
 from motor.motor_asyncio import AsyncIOMotorClient
+from bson import ObjectId
+
 from web3 import Web3
+
+from pydantic import BaseModel, Field
+from typing import Optional
+from datetime import datetime
+from enum import Enum
 
 import os
 import logging
+import uuid
 
 
 # ==============================
-# ENV CONFIG
+# ENV CONFIGURATION
 # ==============================
 
 load_dotenv()
 
-MONGO_URL = os.getenv("MONGO_URL", "mongodb://127.0.0.1:27017")
-DB_NAME = os.getenv("DB_NAME", "tpe_crypto")
+
+MONGO_URL = os.getenv(
+    "MONGO_URL",
+    "mongodb://127.0.0.1:27017"
+)
+
+DB_NAME = os.getenv(
+    "DB_NAME",
+    "tpe_crypto"
+)
+
 
 BNB_RPC = os.getenv(
     "BNB_RPC",
     "https://bsc-dataseed.binance.org/"
 )
 
+
 CHAIN_ID = int(
-    os.getenv("CHAIN_ID", "56")
+    os.getenv(
+        "CHAIN_ID",
+        "56"
+    )
 )
 
 
@@ -32,32 +54,41 @@ CHAIN_ID = int(
 # ==============================
 
 logging.basicConfig(
-    level=logging.INFO
+    level=logging.INFO,
+    format="%(asctime)s - %(levelname)s - %(message)s"
 )
 
-logger = logging.getLogger("TPE_CRYPTO")
+
+logger = logging.getLogger(
+    "TPE_CRYPTO"
+)
 
 
 # ==============================
-# MONGODB
+# DATABASE CONNECTION
 # ==============================
 
-mongo_client = AsyncIOMotorClient(MONGO_URL)
+mongo_client = AsyncIOMotorClient(
+    MONGO_URL
+)
+
 
 db = mongo_client[DB_NAME]
 
 
 # ==============================
-# BNB SMART CHAIN
+# BLOCKCHAIN CONNECTION
 # ==============================
 
 w3 = Web3(
-    Web3.HTTPProvider(BNB_RPC)
+    Web3.HTTPProvider(
+        BNB_RPC
+    )
 )
 
 
 # ==============================
-# MEMORY CONFIGURATION
+# MEMORY CACHE
 # ==============================
 
 TOKENS = {}
@@ -68,6 +99,27 @@ MERCHANT = None
 
 
 # ==============================
+# MONGO SERIALIZER
+# ==============================
+
+def serialize_document(document):
+
+    if document is None:
+        return None
+
+
+    if "_id" in document:
+
+        document["_id"] = str(
+            document["_id"]
+        )
+
+
+    return document
+
+
+
+# ==============================
 # LOAD TOKENS
 # ==============================
 
@@ -75,27 +127,42 @@ async def load_tokens():
 
     tokens = {}
 
+
     cursor = db.tokens.find(
         {
             "enabled": True
         }
     )
 
+
     async for token in cursor:
 
         tokens[token["symbol"]] = {
-            "name": token["name"],
+
+            "name": token.get(
+                "name",
+                token["symbol"]
+            ),
+
             "contract": Web3.to_checksum_address(
                 token["contract"]
             ),
-            "chain": token["chain"]
+
+            "chain": token.get(
+                "chain",
+                "BSC"
+            )
+
         }
+
 
     logger.info(
         f"{len(tokens)} token(s) chargé(s)"
     )
 
+
     return tokens
+
 
 
 # ==============================
@@ -106,25 +173,33 @@ async def load_card_wallets():
 
     wallets = {}
 
+
     cursor = db.card_wallets.find(
         {
             "status": "active"
         }
     )
 
+
     async for wallet in cursor:
 
-        wallets[wallet["wallet_address"]] = wallet
+        wallets[
+            wallet["wallet_address"]
+        ] = wallet
+
+
 
     logger.info(
         f"{len(wallets)} wallet(s) carte chargé(s)"
     )
 
+
     return wallets
 
 
+
 # ==============================
-# LOAD MERCHANT CONFIG
+# LOAD MERCHANT
 # ==============================
 
 async def load_merchant():
@@ -135,19 +210,22 @@ async def load_merchant():
         }
     )
 
+
     if merchant:
 
         logger.info(
-            "Wallet marchand chargé"
+            "Configuration marchand chargée"
         )
 
     else:
 
         logger.warning(
-            "Aucun wallet marchand configuré"
+            "Aucun marchand configuré"
         )
 
+
     return merchant
+
 
 
 # ==============================
@@ -162,16 +240,25 @@ async def lifespan(app: FastAPI):
     global MERCHANT
 
 
-    TOKENS = await load_tokens()
+    try:
 
-    CARD_WALLETS = await load_card_wallets()
+        TOKENS = await load_tokens()
 
-    MERCHANT = await load_merchant()
+        CARD_WALLETS = await load_card_wallets()
+
+        MERCHANT = await load_merchant()
 
 
-    logger.info(
-        "Backend TPE Crypto démarré"
-    )
+        logger.info(
+            "Backend TPE Crypto opérationnel"
+        )
+
+
+    except Exception as e:
+
+        logger.error(
+            f"Erreur démarrage : {e}"
+        )
 
 
     yield
@@ -179,95 +266,57 @@ async def lifespan(app: FastAPI):
 
     mongo_client.close()
 
+
     logger.info(
         "Backend arrêté"
     )
 
 
+
 # ==============================
-# FASTAPI
+# FASTAPI APPLICATION
 # ==============================
 
 app = FastAPI(
+
     title="TPE Crypto Backend",
+
+    description="""
+Backend de paiement crypto pour terminal TPE.
+
+Fonctionnement :
+- Carte JCOP signe la transaction
+- Backend prépare la transaction
+- Réseau BNB valide le transfert
+- MongoDB conserve l'historique
+""",
+
     version="1.0.0",
+
     lifespan=lifespan
+
 )
 # ==============================
-# BASIC ROUTES
+# ENUM TRANSACTION STATUS
 # ==============================
-
-@app.get("/")
-async def root():
-
-    return {
-        "message": "TPE Crypto Backend",
-        "status": "online",
-        "chain_id": CHAIN_ID
-    }
-
-
-@app.get("/health")
-async def health():
-
-    return {
-        "status": "ok"
-    }
-
-
-# ==============================
-# CONFIGURATION API
-# ==============================
-
-@app.get("/tokens")
-async def get_tokens():
-
-    return TOKENS
-
-
-@app.get("/card-wallets")
-async def get_card_wallets():
-
-    return CARD_WALLETS
-
-
-@app.get("/merchant")
-async def get_merchant():
-
-    if MERCHANT is None:
-
-        return {
-            "configured": False
-        }
-
-    merchant = MERCHANT.copy()
-
-    if "_id" in merchant:
-
-        merchant["_id"] = str(
-            merchant["_id"]
-        )
-
-    return merchant
-# ==============================
-# PYDANTIC MODELS
-# ==============================
-
-from pydantic import BaseModel, Field
-from typing import Optional
-from datetime import datetime
-from enum import Enum
-import uuid
-
 
 class TransactionStatus(str, Enum):
 
     CREATED = "created"
+
     SIGNED = "signed"
+
     SENT = "sent"
+
     CONFIRMED = "confirmed"
+
     FAILED = "failed"
 
+
+
+# ==============================
+# PYDANTIC MODELS
+# ==============================
 
 class TransactionCreate(BaseModel):
 
@@ -278,6 +327,7 @@ class TransactionCreate(BaseModel):
     amount: float
 
     merchant_wallet: Optional[str] = None
+
 
 
 class TransactionResponse(BaseModel):
@@ -301,65 +351,212 @@ class TransactionResponse(BaseModel):
     created_at: datetime = Field(
         default_factory=datetime.utcnow
     )
+
+
+
+class MerchantConfig(BaseModel):
+
+    wallet_address: str
+
+
+
+class SignedTransaction(BaseModel):
+
+    transaction_id: str
+
+    signed_transaction: str
+
+
+
+class BroadcastTransaction(BaseModel):
+
+    transaction_id: str
+
+    raw_transaction: str
+
+
+
 # ==============================
-# ERC20 STANDARD ABI
+# BASIC ROUTES
+# ==============================
+
+@app.get("/")
+async def root():
+
+    return {
+
+        "message": "TPE Crypto Backend",
+
+        "status": "online",
+
+        "chain_id": CHAIN_ID
+
+    }
+
+
+
+@app.get("/health")
+async def health():
+
+    return {
+
+        "status": "ok"
+
+    }
+
+
+
+# ==============================
+# TOKEN API
+# ==============================
+
+@app.get("/tokens")
+async def get_tokens():
+
+    return TOKENS
+
+
+
+# ==============================
+# CARD WALLET API
+# ==============================
+
+@app.get("/card-wallets")
+async def get_card_wallets():
+
+    return CARD_WALLETS
+
+
+
+# ==============================
+# MERCHANT API
+# ==============================
+
+@app.get("/merchant")
+async def get_merchant():
+
+
+    if MERCHANT is None:
+
+        return {
+
+            "configured": False
+
+        }
+
+
+    return serialize_document(
+        MERCHANT.copy()
+    )
+
+
+
+# ==============================
+# ERC20 ABI
 # ==============================
 
 ERC20_ABI = [
+
     {
+
         "constant": True,
+
         "inputs": [],
+
         "name": "decimals",
+
         "outputs": [
+
             {
+
                 "name": "",
+
                 "type": "uint8"
+
             }
+
         ],
+
         "type": "function"
+
     },
+
     {
+
         "constant": True,
+
         "inputs": [],
+
         "name": "symbol",
+
         "outputs": [
+
             {
+
                 "name": "",
+
                 "type": "string"
+
             }
+
         ],
+
         "type": "function"
+
     }
+
 ]
 
 
+
 # ==============================
-# TOKEN INFORMATION
+# GET TOKEN DETAILS
 # ==============================
 
 async def get_token_details(symbol: str):
 
-    token = TOKENS.get(symbol.upper())
+
+    token = TOKENS.get(
+        symbol.upper()
+    )
+
 
     if token is None:
 
         return None
 
 
+
     contract = w3.eth.contract(
+
         address=token["contract"],
+
         abi=ERC20_ABI
+
     )
 
 
-    decimals = contract.functions.decimals().call()
+    try:
+
+        decimals = contract.functions.decimals().call()
+
+
+    except Exception:
+
+        decimals = 18
+
 
 
     return {
+
         "symbol": symbol.upper(),
+
         "contract": token["contract"],
+
         "decimals": decimals
+
     }
+
 
 
 # ==============================
@@ -367,7 +564,9 @@ async def get_token_details(symbol: str):
 # ==============================
 
 @app.post("/transactions/create")
-async def create_transaction(data: TransactionCreate):
+async def create_transaction(
+    data: TransactionCreate
+):
 
 
     token = await get_token_details(
@@ -377,71 +576,122 @@ async def create_transaction(data: TransactionCreate):
 
     if token is None:
 
-        return {
-            "success": False,
-            "error": "Token inconnu"
-        }
+        raise HTTPException(
+
+            status_code=400,
+
+            detail="Token inconnu"
+
+        )
+
 
 
     if data.card_wallet not in CARD_WALLETS:
 
-        return {
-            "success": False,
-            "error": "Wallet carte inconnu"
-        }
+        raise HTTPException(
+
+            status_code=400,
+
+            detail="Wallet carte inconnu"
+
+        )
+
 
 
     if MERCHANT is None:
 
-        return {
-            "success": False,
-            "error": "Aucun marchand configuré"
-        }
+        raise HTTPException(
+
+            status_code=400,
+
+            detail="Aucun marchand configuré"
+
+        )
 
 
-    merchant_wallet = MERCHANT["wallet_address"]
+
+    merchant_wallet = MERCHANT[
+        "wallet_address"
+    ]
+
 
 
     amount_base = int(
-        data.amount * (10 ** token["decimals"])
+
+        data.amount *
+
+        (
+
+            10 ** token["decimals"]
+
+        )
+
     )
+
 
 
     transaction = {
 
+
         "card_wallet": data.card_wallet,
+
 
         "merchant_wallet": merchant_wallet,
 
+
         "token_symbol": token["symbol"],
+
 
         "token_contract": token["contract"],
 
+
         "amount": data.amount,
+
 
         "amount_base": str(amount_base),
 
+
         "decimals": token["decimals"],
 
-        "status": TransactionStatus.CREATED,
+
+        "status": TransactionStatus.CREATED.value,
+
 
         "created_at": datetime.utcnow()
+
 
     }
 
 
+
     result = await db.transactions.insert_one(
+
         transaction
+
     )
+
 
 
     return {
 
+
         "success": True,
 
-        "transaction_id": str(result.inserted_id),
 
-        "transaction": transaction
+        "transaction_id": str(
+
+            result.inserted_id
+
+        ),
+
+
+        "status": transaction["status"],
+
+
+        "amount": transaction["amount"],
+
+
+        "token_symbol": transaction["token_symbol"]
 
     }
 # ==============================
@@ -449,191 +699,214 @@ async def create_transaction(data: TransactionCreate):
 # ==============================
 
 ERC20_TRANSFER_ABI = [
+
     {
+
         "constant": False,
+
         "inputs": [
+
             {
+
                 "name": "_to",
+
                 "type": "address"
+
             },
+
             {
+
                 "name": "_value",
+
                 "type": "uint256"
+
             }
+
         ],
+
         "name": "transfer",
+
         "outputs": [
+
             {
+
                 "name": "",
+
                 "type": "bool"
+
             }
+
         ],
+
         "type": "function"
+
     }
+
 ]
 
 
+
 # ==============================
-# PREPARE BLOCKCHAIN TRANSACTION
+# PREPARE TRANSACTION
 # ==============================
 
 @app.post("/transactions/prepare")
-async def prepare_transaction(transaction_id: str):
+async def prepare_transaction(
+    transaction_id: str
+):
 
 
-    transaction = await db.transactions.find_one(
-        {
-            "_id": ObjectId(transaction_id)
-        }
-    )
+    try:
+
+        transaction = await db.transactions.find_one(
+
+            {
+
+                "_id": ObjectId(transaction_id)
+
+            }
+
+        )
+
+
+    except Exception:
+
+        raise HTTPException(
+
+            status_code=400,
+
+            detail="Identifiant transaction invalide"
+
+        )
+
 
 
     if transaction is None:
 
-        return {
-            "success": False,
-            "error": "Transaction introuvable"
-        }
+        raise HTTPException(
+
+            status_code=404,
+
+            detail="Transaction introuvable"
+
+        )
+
 
 
     token_contract = w3.eth.contract(
+
         address=transaction["token_contract"],
+
         abi=ERC20_TRANSFER_ABI
+
     )
 
 
+
     sender = Web3.to_checksum_address(
+
         transaction["card_wallet"]
+
     )
 
 
     receiver = Web3.to_checksum_address(
+
         transaction["merchant_wallet"]
+
     )
 
 
-    nonce = w3.eth.get_transaction_count(
-        sender
-    )
+
+    try:
 
 
-    gas_price = w3.eth.gas_price
+        nonce = w3.eth.get_transaction_count(
+
+            sender
+
+        )
 
 
-    tx = token_contract.functions.transfer(
-        receiver,
-        int(transaction["amount_base"])
-    ).build_transaction(
-        {
-            "chainId": CHAIN_ID,
-            "from": sender,
-            "nonce": nonce,
-            "gasPrice": gas_price
-        }
-    )
+        gas_price = w3.eth.gas_price
+
+
+
+        tx = token_contract.functions.transfer(
+
+            receiver,
+
+            int(transaction["amount_base"])
+
+        ).build_transaction(
+
+            {
+
+                "chainId": CHAIN_ID,
+
+                "from": sender,
+
+                "nonce": nonce,
+
+                "gasPrice": gas_price
+
+            }
+
+        )
+
+
+    except Exception as e:
+
+
+        raise HTTPException(
+
+            status_code=500,
+
+            detail=str(e)
+
+        )
+
 
 
     await db.transactions.update_one(
+
         {
+
             "_id": ObjectId(transaction_id)
+
         },
+
         {
+
             "$set": {
+
                 "unsigned_transaction": tx,
-                "status": TransactionStatus.CREATED
+
+                "status": TransactionStatus.CREATED.value
+
             }
+
         }
+
     )
+
 
 
     return {
 
+
         "success": True,
 
+
         "transaction_id": transaction_id,
+
 
         "unsigned_transaction": tx
 
     }
-# ==============================
-# MONGODB OBJECT ID
-# ==============================
-
-from bson import ObjectId
 
 
-# ==============================
-# GET TRANSACTION
-# ==============================
 
-@app.get("/transactions/{transaction_id}")
-async def get_transaction(transaction_id: str):
-
-    transaction = await db.transactions.find_one(
-        {
-            "_id": ObjectId(transaction_id)
-        }
-    )
-
-    if transaction is None:
-
-        return {
-            "success": False,
-            "error": "Transaction introuvable"
-        }
-
-
-    transaction["_id"] = str(
-        transaction["_id"]
-    )
-
-
-    return {
-        "success": True,
-        "transaction": transaction
-    }
-
-
-# ==============================
-# TRANSACTION HISTORY
-# ==============================
-
-@app.get("/transactions")
-async def get_transactions():
-
-    transactions = []
-
-    cursor = db.transactions.find().sort(
-        "created_at",
-        -1
-    )
-
-
-    async for transaction in cursor:
-
-        transaction["_id"] = str(
-            transaction["_id"]
-        )
-
-        transactions.append(
-            transaction
-        )
-
-
-    return {
-        "success": True,
-        "count": len(transactions),
-        "transactions": transactions
-    }
-# ==============================
-# SIGNED TRANSACTION MODEL
-# ==============================
-
-class SignedTransaction(BaseModel):
-
-    transaction_id: str
-
-    signed_transaction: str
 
 
 # ==============================
@@ -642,333 +915,356 @@ class SignedTransaction(BaseModel):
 
 @app.post("/transactions/sign")
 async def receive_signature(
+
     data: SignedTransaction
+
 ):
-
-
-    transaction = await db.transactions.find_one(
-        {
-            "_id": ObjectId(data.transaction_id)
-        }
-    )
-
-
-    if transaction is None:
-
-        return {
-            "success": False,
-            "error": "Transaction introuvable"
-        }
-
-
-    await db.transactions.update_one(
-        {
-            "_id": ObjectId(data.transaction_id)
-        },
-        {
-            "$set": {
-                "signed_transaction": data.signed_transaction,
-                "status": TransactionStatus.SIGNED
-            }
-        }
-    )
-
-
-    return {
-
-        "success": True,
-
-        "message": "Signature reçue",
-
-        "transaction_id": data.transaction_id
-
-    }
-# ==============================
-# SEND SIGNED TRANSACTION TO BNB
-# ==============================
-
-class BroadcastTransaction(BaseModel):
-
-    transaction_id: str
-
-    raw_transaction: str
-
-
-@app.post("/transactions/broadcast")
-async def broadcast_transaction(
-    data: BroadcastTransaction
-):
-
-
-    transaction = await db.transactions.find_one(
-        {
-            "_id": ObjectId(data.transaction_id)
-        }
-    )
-
-
-    if transaction is None:
-
-        return {
-            "success": False,
-            "error": "Transaction introuvable"
-        }
 
 
     try:
 
-        tx_hash = w3.eth.send_raw_transaction(
-            bytes.fromhex(
-                data.raw_transaction.replace(
-                    "0x",
-                    ""
-                )
-            )
+        transaction = await db.transactions.find_one(
+
+            {
+
+                "_id": ObjectId(data.transaction_id)
+
+            }
+
         )
+
+
+    except Exception:
+
+        raise HTTPException(
+
+            status_code=400,
+
+            detail="ID transaction invalide"
+
+        )
+
+
+
+    if transaction is None:
+
+        raise HTTPException(
+
+            status_code=404,
+
+            detail="Transaction introuvable"
+
+        )
+
+
+
+    await db.transactions.update_one(
+
+        {
+
+            "_id": ObjectId(data.transaction_id)
+
+        },
+
+        {
+
+            "$set": {
+
+                "signed_transaction": data.signed_transaction,
+
+                "status": TransactionStatus.SIGNED.value
+
+            }
+
+        }
+
+    )
+
+
+
+    return {
+
+
+        "success": True,
+
+
+        "message": "Signature carte reçue",
+
+
+        "transaction_id": data.transaction_id
+
+    }
+
+
+
+
+
+# ==============================
+# BROADCAST SIGNED TRANSACTION
+# ==============================
+
+@app.post("/transactions/broadcast")
+async def broadcast_transaction(
+
+    data: BroadcastTransaction
+
+):
+
+
+    try:
+
+        transaction = await db.transactions.find_one(
+
+            {
+
+                "_id": ObjectId(data.transaction_id)
+
+            }
+
+        )
+
+
+    except Exception:
+
+        raise HTTPException(
+
+            status_code=400,
+
+            detail="ID transaction invalide"
+
+        )
+
+
+
+    if transaction is None:
+
+        raise HTTPException(
+
+            status_code=404,
+
+            detail="Transaction introuvable"
+
+        )
+
+
+
+    try:
+
+
+        raw_tx = bytes.fromhex(
+
+            data.raw_transaction.replace(
+
+                "0x",
+
+                ""
+
+            )
+
+        )
+
+
+
+        tx_hash = w3.eth.send_raw_transaction(
+
+            raw_tx
+
+        )
+
 
 
         tx_hash_hex = tx_hash.hex()
 
 
+
         await db.transactions.update_one(
+
             {
+
                 "_id": ObjectId(data.transaction_id)
+
             },
+
             {
+
                 "$set": {
+
                     "tx_hash": tx_hash_hex,
-                    "status": TransactionStatus.SENT
+
+                    "status": TransactionStatus.SENT.value
+
                 }
+
             }
+
         )
+
 
 
         return {
 
+
             "success": True,
+
 
             "tx_hash": tx_hash_hex
 
         }
 
 
+
     except Exception as e:
 
 
         await db.transactions.update_one(
+
             {
+
                 "_id": ObjectId(data.transaction_id)
+
             },
+
             {
+
                 "$set": {
+
                     "error": str(e),
-                    "status": TransactionStatus.FAILED
+
+                    "status": TransactionStatus.FAILED.value
+
                 }
+
             }
+
         )
 
 
-        return {
 
-            "success": False,
+        raise HTTPException(
 
-            "error": str(e)
+            status_code=500,
 
-        }
-# ==============================
-# CHECK BLOCKCHAIN CONFIRMATION
-# ==============================
+            detail=str(e)
 
-@app.get("/transactions/{transaction_id}/status")
-async def check_transaction_status(
-    transaction_id: str
-):
-
-
-    transaction = await db.transactions.find_one(
-        {
-            "_id": ObjectId(transaction_id)
-        }
-    )
-
-
-    if transaction is None:
-
-        return {
-            "success": False,
-            "error": "Transaction introuvable"
-        }
-
-
-    if "tx_hash" not in transaction:
-
-        return {
-
-            "success": True,
-
-            "status": transaction["status"]
-
-        }
-
-
-    try:
-
-        receipt = w3.eth.get_transaction_receipt(
-            transaction["tx_hash"]
         )
-
-
-        if receipt is None:
-
-            return {
-
-                "success": True,
-
-                "status": "pending"
-
-            }
-
-
-        if receipt["status"] == 1:
-
-
-            await db.transactions.update_one(
-
-                {
-                    "_id": ObjectId(transaction_id)
-                },
-
-                {
-                    "$set": {
-                        "status": TransactionStatus.CONFIRMED,
-                        "block_number": receipt["blockNumber"]
-                    }
-                }
-
-            )
-
-
-            return {
-
-                "success": True,
-
-                "status": "confirmed",
-
-                "block": receipt["blockNumber"]
-
-            }
-
-
-        else:
-
-
-            await db.transactions.update_one(
-
-                {
-                    "_id": ObjectId(transaction_id)
-                },
-
-                {
-                    "$set": {
-                        "status": TransactionStatus.FAILED
-                    }
-                }
-
-            )
-
-
-            return {
-
-                "success": True,
-
-                "status": "failed"
-
-            }
-
-
-    except Exception as e:
-
-
-        return {
-
-            "success": False,
-
-            "error": str(e)
-
-        }
-# ==============================
-# MERCHANT CONFIGURATION MODEL
-# ==============================
-
-class MerchantConfig(BaseModel):
-
-    wallet_address: str
-
-
 # ==============================
 # UPDATE MERCHANT WALLET
 # ==============================
 
 @app.post("/merchant/update")
 async def update_merchant(
+
     data: MerchantConfig
+
 ):
-
-
-    wallet = Web3.to_checksum_address(
-        data.wallet_address
-    )
-
-
-    merchant_data = {
-
-        "wallet_address": wallet,
-
-        "status": "active",
-
-        "updated_at": datetime.utcnow()
-
-    }
-
-
-    await db.merchant_config.update_many(
-        {},
-        {
-            "$set": {
-                "status": "inactive"
-            }
-        }
-    )
-
-
-    result = await db.merchant_config.insert_one(
-        merchant_data
-    )
 
 
     global MERCHANT
 
+
+    try:
+
+        wallet = Web3.to_checksum_address(
+
+            data.wallet_address
+
+        )
+
+
+    except Exception:
+
+        raise HTTPException(
+
+            status_code=400,
+
+            detail="Adresse wallet invalide"
+
+        )
+
+
+
+    merchant_data = {
+
+
+        "wallet_address": wallet,
+
+
+        "status": "active",
+
+
+        "updated_at": datetime.utcnow()
+
+
+    }
+
+
+
+    await db.merchant_config.update_many(
+
+        {},
+
+        {
+
+            "$set": {
+
+                "status": "inactive"
+
+            }
+
+        }
+
+    )
+
+
+
+    result = await db.merchant_config.insert_one(
+
+        merchant_data
+
+    )
+
+
+
     MERCHANT = merchant_data
+
 
 
     return {
 
+
         "success": True,
 
-        "merchant_id": str(result.inserted_id),
+
+        "merchant_id": str(
+
+            result.inserted_id
+
+        ),
+
 
         "wallet_address": wallet
 
     }
+
+
+
+
+
 # ==============================
 # VALIDATION HELPERS
 # ==============================
 
 def validate_wallet(address: str):
 
+
     try:
 
-        return Web3.is_address(address)
+        return Web3.is_address(
+
+            address
+
+        )
+
 
     except Exception:
 
@@ -976,35 +1272,49 @@ def validate_wallet(address: str):
 
 
 
+
+
 def validate_amount(amount: float):
+
 
     return amount > 0
 
 
 
+
+
 # ==============================
-# VALIDATE MERCHANT WALLET
+# VALIDATE WALLET API
 # ==============================
 
 @app.get("/validate/wallet/{address}")
-async def validate_wallet_api(address: str):
+async def validate_wallet_api(
 
+    address: str
 
-    valid = validate_wallet(address)
+):
 
 
     return {
 
+
         "address": address,
 
-        "valid": valid
+
+        "valid": validate_wallet(
+
+            address
+
+        )
 
     }
 
 
 
+
+
 # ==============================
-# BACKEND STATUS
+# SYSTEM STATUS
 # ==============================
 
 @app.get("/system/status")
@@ -1016,10 +1326,13 @@ async def system_status():
     bnb_status = False
 
 
+
     try:
 
         await db.command(
+
             "ping"
+
         )
 
         mongo_status = True
@@ -1027,7 +1340,10 @@ async def system_status():
 
     except Exception:
 
+
         mongo_status = False
+
+
 
 
 
@@ -1038,18 +1354,47 @@ async def system_status():
 
     except Exception:
 
+
         bnb_status = False
+
 
 
 
     return {
 
+
         "backend": True,
+
 
         "mongodb": mongo_status,
 
+
         "bnb_chain": bnb_status,
 
-        "chain_id": CHAIN_ID
+
+        "chain_id": CHAIN_ID,
+
+
+        "tokens_loaded": len(TOKENS),
+
+
+        "cards_loaded": len(CARD_WALLETS),
+
+
+        "merchant_configured": MERCHANT is not None
 
     }
+
+
+
+
+
+# ==============================
+# START MESSAGE
+# ==============================
+
+logger.info(
+
+    "Server.py chargé correctement"
+
+)
