@@ -574,7 +574,10 @@ async def get_token_details(symbol: str):
 # CREATE TRANSACTION
 # ==============================
 
-@app.post("/transactions/create")
+@app.post(
+    "/transactions/create",
+    response_model=TransactionCreateResponse
+)
 async def create_transaction(
     data: TransactionCreate
 ):
