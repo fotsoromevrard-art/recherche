@@ -331,6 +331,17 @@ class TransactionCreate(BaseModel):
 
 
 class TransactionResponse(BaseModel):
+class TransactionCreateResponse(BaseModel):
+
+    success: bool
+
+    transaction_id: str
+
+    status: str
+
+    amount: float
+
+    token_symbol: str
 
     id: str = Field(
         default_factory=lambda: str(uuid.uuid4())
