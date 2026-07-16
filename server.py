@@ -365,28 +365,11 @@ class TransactionCreateResponse(BaseModel):
 
     token_symbol: str
 
-    id: str = Field(
-        default_factory=lambda: str(uuid.uuid4())
-    )
-
-    card_wallet: str
-
-    merchant_wallet: str
-
-    token_symbol: str
-
-    amount: float
-
-    status: TransactionStatus = TransactionStatus.CREATED
-
-    tx_hash: Optional[str] = None
-
-    created_at: datetime = Field(
-        default_factory=datetime.utcnow
-    )
 
 
+class MerchantConfig(BaseModel):
 
+    wallet_address: str
 class MerchantConfig(BaseModel):
 
     wallet_address: str
